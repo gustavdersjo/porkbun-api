@@ -9,5 +9,5 @@ targeting v3 at the time of writing.
 The tool can be used either through the
 commandline or as a python libary, and
 comes with built-in support for some
-common usecases such as handling DDNS
+common usecases such as handling DDNS,
 or SSL verification over DNS. Oink! 🐖

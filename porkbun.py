@@ -10,7 +10,7 @@ targeting v3 at the time of writing.
 The tool can be used either through the
 commandline or as a python libary, and
 comes with built-in support for some
-common usecases such as handling DDNS
+common usecases such as handling DDNS,
 or SSL verification over DNS. Oink! 🐖
 """
 
@@ -31,7 +31,6 @@ DEF_ENDPOINT = 'https://api-ipv4.porkbun.com/api/json/v3'
 
 # Utilities
 # -----------------------------------------------------------------------------
-
 def _get_fqdn(subdomain: str, domain: str) -> str:
     return f'{subdomain.lower()}.{domain}'.strip('.')
 
@@ -47,7 +46,6 @@ def _err(msg, **kwargs) -> None:
 
 # API
 # -----------------------------------------------------------------------------
-
 class Porkbun:
     def __init__(self,
                  api_key: str,
@@ -72,7 +70,6 @@ class Porkbun:
         
         filtered_data = {key: value for key, value in data.items() 
                          if key not in authenticated_data}
-        
         authenticated_data.update(filtered_data)
         
         return authenticated_data
@@ -81,7 +78,7 @@ class Porkbun:
         url = self.endpoint + target
         authenticated_data = self.__authenticate_data(data)
         
-        # post request and retrive response text
+        # post request
         response = requests.post(url, json.dumps(authenticated_data))
         return response
     
@@ -93,7 +90,7 @@ class Porkbun:
         
         response_json = json.loads(response.text)
         if not isinstance(response_json, dict):
-            _err(f'json was not a dict: {response_json}')
+            _err(f'Response json was not a dict: {response_json}')
         return response_json
     
     def get_public_ip(self) -> Union[IPv4Address, IPv6Address]:
@@ -110,12 +107,12 @@ class Porkbun:
         return response
     
     def create_record(self, 
-                          domain: str, 
-                          name: str,
-                          type_: str,
-                          content: str,
-                          ttl: Optional[str] = None,
-                          prio: Optional[str] = None):
+                      domain: str, 
+                      name: str,
+                      type_: str,
+                      content: str,
+                      ttl: Optional[str] = None,
+                      prio: Optional[str] = None):
         data = {
             'name': name,
             'type': type_,
@@ -170,18 +167,24 @@ class Porkbun:
                 self.delete_record(domain, record['id'])
                 
     def update_a_aaaa_record(self, 
-                           domain: str,
-                           ip: Union[IPv4Address, IPv6Address],
-                           subdomain: str = None) -> None:
+                             domain: str,
+                             ip: Union[IPv4Address, IPv6Address],
+                             subdomain: str = None) -> None:
         self.delete_a_aaaa_record(domain, ip, subdomain)
         response = self.create_a_aaaa_record(domain, ip, subdomain)
         print(response['status'])
+        
+    def get_ssl(self,
+                domain: str) -> Any:
+        url = '/ssl/retrieve/' + domain
+        data = self.__authenticate_data({})
+        response = self.api(url, data)
+        return response
 
 
 # Main routine
 # -----------------------------------------------------------------------------
-
-def get_config(path: str) -> Any:
+def _get_config(path: str) -> Any:
     config = toml.load(path)
     
     # check required config elements
@@ -228,7 +231,7 @@ def main():
         required=True)
     
     # create the parser for the "ddns" sub-command
-    parser_ddns = sub_parsers.add_parser('ddns', help='DDNS updater mode')
+    parser_ddns = sub_parsers.add_parser('ddns', help='Update DDNS')
     parser_ddns.add_argument(
         'domain', 
         type=str, 
@@ -244,6 +247,12 @@ def main():
         help='IP Address. Skip auto-detection and use this IP for entry',
         required=False)
     
+    parser_ddns = sub_parsers.add_parser('get_ssl', help='Get SSL certificates')
+    parser_ddns.add_argument(
+        'domain', 
+        type=str, 
+        help='root domain name. must not contain any subdomains')
+    
     args = parser.parse_args()
     
     # configure auth
@@ -254,7 +263,7 @@ def main():
     
     # apply config
     if args.config is not None:
-        config = get_config(args.config)
+        config = _get_config(args.config)
         endpoint = config['endpoint']
         api_key = config['apikey']
         secret_api_key = config['secretapikey']
@@ -296,6 +305,12 @@ def main():
         
         # perform update
         porkbun.update_a_aaaa_record(domain, ip, subdomain)
+    elif args.mode == 'get_ssl':
+        # get relevant arguments
+        domain = args.domain
+
+        # get certs
+        print(porkbun.get_ssl(domain))
     else:
         parser._error(f'Unknown mode: \'{args.mode}\'')
 
