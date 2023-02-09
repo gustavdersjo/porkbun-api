@@ -22,15 +22,39 @@ import ipaddress
 from ipaddress import IPv4Address, IPv6Address
 import toml
 import json
-from typing import Any, Optional, Union, Dict
+from typing import Any, Optional, Union, Dict, List, Tuple
 import logging
+import inspect
 
 
 DEF_ENDPOINT = 'https://api-ipv4.porkbun.com/api/json/v3'
+DEF_CONFIG_PATH = str(Path(__file__).parent) + '/config.toml'
 
 
 # Utilities
 # -----------------------------------------------------------------------------
+def get_config(path: str = DEF_CONFIG_PATH) -> Any:
+    config = toml.load(path)
+    
+    # figure out which config elements are required to fulfill 
+    # the signature requirements of Porkbun.__init__.
+    config_required = [e.name for e in
+         list(inspect.signature(Porkbun.__init__).parameters.values())[1:]
+         if e.default == inspect.Parameter.empty]
+    
+    # check required config elements
+    if not isinstance(config, dict) or \
+        any((e not in config) for e in config_required):
+        _err(f'all of the following are required in \'{path}\': '
+            f'{config_required}')
+    
+    # set default endpoint
+    tmp = {}
+    tmp.setdefault('endpoint', DEF_ENDPOINT)
+    config.update(tmp)
+    
+    return config
+
 def _get_fqdn(subdomain: str, domain: str) -> str:
     return f'{subdomain.lower()}.{domain}'.strip('.')
 
@@ -54,12 +78,16 @@ class Porkbun:
         self.__api_key = api_key
         self.__secret_api_key = secret_api_key
         self.__endpoint = endpoint
+    
+    @classmethod    
+    def init_from_config(cls, path: str = DEF_CONFIG_PATH) -> 'Porkbun':
+        return cls(**get_config(path))
         
     @property
     def endpoint(self) -> str:
         return self.__endpoint
     
-    def __authenticate_data(self, data):
+    def __authenticate_data(self, data) -> Dict:
         # This is meant to mimick the official porkbun ddns script,
         # we could probably skip including the endpoint and it would
         # still work.
@@ -85,7 +113,7 @@ class Porkbun:
     def api(self, target, data={}) -> Dict[str, str]:
         response = self.api_raw(target, data)
         
-        if not response.status_code == 200:
+        if response.status_code != 200:
             _err(f'Fail (code {response.status_code}).\nText: \n{response.text}')
         
         response_json = json.loads(response.text)
@@ -97,7 +125,16 @@ class Porkbun:
         response = self.api('/ping/')
         return _str_to_ip_addr_obj(response['yourIp'])
     
-    def get_records(self, domain: str) -> Any:
+    def get_record_by_id(self, domain: str, id: str) -> Dict[str, str]:
+        response = self.api('/dns/retrieve/' + domain + '/' + id)
+        
+        if response['status'] == 'ERROR':
+            _err('Failed to get records. '
+            f'Make sure you specified the correct domain ({domain}), '
+            'and that API access has been enabled for this domain.')
+        return response
+    
+    def get_records(self, domain: str) -> Dict[str, str]:
         response = self.api('/dns/retrieve/' + domain)
         
         if response['status'] == 'ERROR':
@@ -106,20 +143,54 @@ class Porkbun:
             'and that API access has been enabled for this domain.')
         return response
     
+    def search_records(self, 
+                       domain: str,
+                       name: Optional[str] = None,
+                       type_: Optional[str] = None,
+                       content: Optional[str] = None,
+                       ttl: Optional[str] = None,
+                       prio: Optional[str] = None,
+                       notes: Optional[str] = None,
+                       records: Optional[Dict[str, str]] = None) \
+                           -> Tuple[Dict[str, str], List[Dict[str, str]]]:
+        response = {}
+        if records is None:
+            response = self.get_records(domain)
+            records = response['records']
+            
+        query = {
+            'name': name,
+            'type': type_,
+            'content': content,
+            'ttl': ttl,
+            'prio': prio,
+            'notes': notes}
+        query = {k: v for k, v in query.items() if v is not None}
+        
+        matching_records = []
+        for record in records:
+            for key, value in query:
+                if key not in record:
+                    continue
+                if key in record and record['key'] != value:
+                    continue
+                matching_records += record
+        
+        return (response, matching_records)
+    
     def create_record(self, 
                       domain: str, 
                       name: str,
                       type_: str,
                       content: str,
                       ttl: Optional[str] = None,
-                      prio: Optional[str] = None):
+                      prio: Optional[str] = None) -> Dict[str, str]:
         data = {
             'name': name,
             'type': type_,
             'content': content,
             'ttl': ttl,
-            'prio': prio
-        }
+            'prio': prio}
         data = {k: v for k, v in data.items() if v is not None}
         
         response = self.api('/dns/create/' + domain, data)
@@ -128,7 +199,7 @@ class Porkbun:
     def create_a_aaaa_record(self,
                              domain: str,
                              ip: Union[IPv4Address, IPv6Address],
-                             subdomain: str = None):
+                             subdomain: str = None) -> Dict[str, str]:
         name = '' if subdomain is None else subdomain.lower()
         type_ = 'A' if ip.version == 4 else 'AAAA'
         content = ip.exploded
@@ -146,7 +217,7 @@ class Porkbun:
     
     def delete_record(self,
                       domain: str, 
-                      id: str) -> Any:
+                      id: str) -> Dict[str, str]:
         
         url = '/dns/delete/' + domain + '/' + id
         response = self.api(url)
@@ -165,6 +236,32 @@ class Porkbun:
             if record['name'] == fqdn and record['type'] in [type_, 'ALIAS', 'CNAME']:
                 print(f"Deleting existing {record['type']}-Record: {record}")
                 self.delete_record(domain, record['id'])
+                  
+    def update_record(self,
+                      domain: str,
+                      name: str,
+                      type_: str,
+                      content: str,
+                      ttl: Optional[str] = None,
+                      prio: Optional[str] = None) ->\
+                          Tuple[Dict[str, str], Dict[str, str]]:
+        domain = domain.lower()
+        name = name.lower()
+        type_ = type_.upper()
+        fqdn = _get_fqdn(name, domain)
+        
+        responses = []
+        # delete record
+        for record in self.get_records(domain)['records']:
+            if record['name'] == fqdn and record['type'] == type_:
+                print(f"Deleting existing {record['type']}-Record: {record}")
+                responses += self.delete_record(domain, record['id'])
+                break
+        
+        # create record
+        responses += self.create_record(domain, name, type_, content, ttl, prio)
+        
+        return tuple(responses)
                 
     def update_a_aaaa_record(self, 
                              domain: str,
@@ -184,33 +281,13 @@ class Porkbun:
 
 # Main routine
 # -----------------------------------------------------------------------------
-def _get_config(path: str) -> Any:
-    config = toml.load(path)
-    
-    # check required config elements
-    config_required = ['secretapikey', 'apikey']
-    if not isinstance(config, dict) or \
-        any((e not in config) for e in config_required):
-        _err(f'all of the following are required in \'{path}\': '
-            f'{config_required}')
-    
-    # set default endpoint
-    tmp = {}
-    tmp.setdefault('endpoint', DEF_ENDPOINT)
-    config.update(tmp)
-    
-    return config
-
-
 def main():
-    def_config_path = str(Path(__file__).parent) + '/config.toml'
-    
     # toplevel parser
     parser = argparse.ArgumentParser(description=__doc__)
     
     # api authentication
     parser.add_argument('--config',
-                        default=def_config_path,
+                        default=DEF_CONFIG_PATH,
                         nargs='?',
                         help='path to toml config file')
     parser.add_argument('--key',
