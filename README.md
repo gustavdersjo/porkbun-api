@@ -3,7 +3,7 @@
 Porkbun is an amazingly awesome ICANN
 accredited domain name registrar.
 This is a tool to interface with their
-equally amazingly awesome API, 
+equally amazingly awesome API,
 targeting v3 at the time of writing.
 
 The tool can be used either through the

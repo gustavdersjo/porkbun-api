@@ -4,7 +4,7 @@
 Porkbun is an amazingly awesome ICANN
 accredited domain name registrar.
 This is a tool to interface with their
-equally amazingly awesome API, 
+equally amazingly awesome API,
 targeting v3 at the time of writing.
 
 The tool can be used either through the
@@ -174,7 +174,7 @@ class Porkbun:
                     continue
                 if key in record and record['key'] != value:
                     continue
-                matching_records += record
+                matching_records.append(record)
         
         return (response, matching_records)
     
@@ -255,11 +255,11 @@ class Porkbun:
         for record in self.get_records(domain)['records']:
             if record['name'] == fqdn and record['type'] == type_:
                 print(f"Deleting existing {record['type']}-Record: {record}")
-                responses += self.delete_record(domain, record['id'])
+                responses.append(self.delete_record(domain, record['id']))
                 break
         
         # create record
-        responses += self.create_record(domain, name, type_, content, ttl, prio)
+        responses.append(self.create_record(domain, name, type_, content, ttl, prio))
         
         return tuple(responses)
                 
@@ -340,10 +340,10 @@ def main():
     
     # apply config
     if args.config is not None:
-        config = _get_config(args.config)
+        config = get_config(args.config)
         endpoint = config['endpoint']
-        api_key = config['apikey']
-        secret_api_key = config['secretapikey']
+        api_key = config['api_key']
+        secret_api_key = config['secret_api_key']
     
     # apply args
     if args.endpoint is not None:
